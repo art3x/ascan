@@ -1,24 +1,44 @@
 #include "pch.h"
 
 #include <cstdint>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include <windows.h>
 
 #include "output.h"
 
+static void FreeOutput(Output* output) {
+	if (!output) {
+		return;
+	}
+	free(output->data);
+	output->data = NULL;
+	free(output);
+}
+
 Output* NewOutput(int bufferSize, goCallback callback)
 {
-	struct Output output;
+	if (bufferSize <= 0) {
+		bufferSize = 128;
+	}
 
-	output.len = bufferSize;
+	Output* output = (Output*)malloc(sizeof(Output));
+	if (!output) {
+		return NULL;
+	}
 
-	output.data = (char*)malloc(bufferSize);
-	memset(output.data, 0, output.len);
+	output->len = bufferSize;
+	output->data = (char*)malloc(output->len);
+	if (!output->data) {
+		free(output);
+		return NULL;
+	}
+	memset(output->data, 0, output->len);
+	output->callback = callback;
 
-	output.callback = callback;
-
-	return &output;
+	return output;
 }
 
 void append(Output* output, const char* format, ...)
@@ -46,14 +66,22 @@ void append(Output* output, const char* format, ...)
 
 int success(Output* output)
 {
-	(*output).callback((*output).data, strlen((*output).data));
-	free((*output).data);
+	if (!output) {
+		return 0;
+	}
+
+	if (output->callback) {
+		output->callback(output->data, (int)strlen(output->data));
+	}
+	FreeOutput(output);
 	return 0;
 }
 
 int failure(Output* output)
 {
-	(*output).callback((*output).data, strlen((*output).data));
-	free((*output).data);
+	if (output && output->callback) {
+		output->callback(output->data, (int)strlen(output->data));
+	}
+	FreeOutput(output);
 	return 1;
 }

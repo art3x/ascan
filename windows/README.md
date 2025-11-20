@@ -7,10 +7,11 @@ ArtScan is a tiny, convenient, and very fast port scanner written in C. It is pe
 ## Features
 
 * IP ranges and port ranges scan with threads and timeout adjustments
-* Smart scan of TOP 120 most common ports by default
+* Smart scan of TOP 123 most common ports by default
 * Perform ping scan only (skip port scan)
 * NetBIOS name lookup
 * Grab answers and HTTP responses on opened ports
+* Scan by IP and FQDN
 * Scan summary brief
 
 ## Usage

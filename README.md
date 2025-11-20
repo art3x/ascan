@@ -1,16 +1,17 @@
 # ArtScan
 
-ArtScan is a tiny, smart, and very fast port scanner written in C. It is perfect for pentesting and red team engagements. Its size is only **25 KB**.
+ArtScan is a multiplatform, tiny, smart, and very fast port scanner written in C. It is perfect for pentesting and red team engagements. Its size is only **25 KB**.
 
 ![ArtScan](images/ascan.png)
 
 ## Features
 
 * IP ranges and port ranges scan with threads and timeout adjustments
-* Smart scan of TOP 120 most common ports by default
+* Smart scan of TOP 123 most common ports by default
 * Perform ping scan only (skip port scan)
 * NetBIOS name lookup
 * Grab answers and HTTP responses on opened ports
+* Scan by IP and FQDN
 * Scan summary brief
 
 ## Usage
