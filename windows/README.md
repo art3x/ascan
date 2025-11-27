@@ -7,25 +7,25 @@ ArtScan is a tiny, convenient, and very fast port scanner written in C. It is pe
 ## Features
 
 * IP ranges and port ranges scan with threads and timeout adjustments
-* Smart scan of TOP 123 most common ports by default
+* Super fast smart scan of TOP 123 most common ports by default
+* Scan progress
 * Perform ping scan only (skip port scan)
-* NetBIOS name lookup
-* Grab answers and HTTP responses on opened ports
+* Capture banners and HTTP responses on open ports
 * Scan by IP and FQDN
-* Scan summary brief
+* Brief, sorted scan summary
 
 ## Usage
 
 ```
-Usage: <ipRange> [portRange] [-T threadLimit] [-t timeout] [-r rechecks] [-Pn] [-i] [-Nb] [-h]
-  ipRange:   Single IP or range (e.g., 192.168.1.1-100 or 192.168.1.1-192.168.1.100)
-  portRange: Single port, range (80-90), or comma-separated list (22,80,443)
-  -T:        Set thread limit (default: 20, max: 50)
-  -t:        Set port scan timeout in msec (default: 100)
-  -r:        Set extra rechecks for unanswered ports (default: 0, max: 10)
-  -Pn:       Disable ping (skip host availability check)
+Usage: <target> [portRange] [options]
+  target:    Hostname (e.g., scanme.nmap.org), single IP, or range (192.168.1.1-100)
+  portRange: Single port, range (80-90), comma-separated list (22,80,443), or 'all'
+Options:
+  -T <num>:  Set thread limit (default: 20, max: 50)
+  -t <ms>:   Set port scan timeout in msec (default: 100)
+  -r <num>:  Set extra rechecks for unanswered ports (default: 0, max: 10)
+  -Pn:       Disable ping (skip host discovery)
   -i:        Perform ping scan only (skip port scan)
-  -Nb:       Enable hostname resolution during ICMP (like ping -a)
+  -Nb:       Enable hostname resolution via reverse DNS lookup
   -h:        Display this help message
-
 ```
