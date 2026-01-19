@@ -1,3 +1,7 @@
+/*
+   Paste the following code. It includes the logic to switch default port lists based on the protocol.
+*/
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,8 +31,9 @@ static int g_rechecks       = 0;
 static int g_pingEnabled    = 1;
 static int g_isPingOnly     = 0;
 static int g_netbiosEnabled = 0; // -Nb flag support
+static int g_udpEnabled     = 0; // -u flag support
 
-// Top 123 common ports as default
+// Top 123 common TCP ports
 static const char* DEFAULT_PORTS =
 "20,21,22,23,25,53,65,66,69,80,88,110,111,135,139,143,194,389,443,"
 "445,464,465,587,593,636,873,993,995,1194,1433,1494,1521,1540,1666,1801,"
@@ -39,10 +44,17 @@ static const char* DEFAULT_PORTS =
 "8529,8530,8531,8600,8888,8912,9000,9042,9080,9090,9092,9160,9200,9229,9300,9389,"
 "9443,9515,9999,10000,10001,10011,10050,10051,11211,15672,17990,27015,27017,30033,47001";
 
+// Top 57 common UDP ports
+static const char* DEFAULT_UDP_PORTS = 
+"53,67,68,69,88,111,123,137,138,161,162,389,443,464,500,514,520,1194,1701,"
+"1812,1813,1900,2049,2055,2056,2123,2152,2222,3074,3222,3478,3479,3480,3784,"
+"3785,4500,4739,4789,5004,5005,5060,5061,5349,5353,5355,6081,8125,8472,9600,"
+"9995,9996,19302,20000,25826,27015,47808,51820";
+
 // Per-IP result struct
 typedef struct {
     char ip[INET_ADDRSTRLEN];
-    char netbiosName[NI_MAXHOST]; // Changed to standard macro
+    char netbiosName[NI_MAXHOST];
     char **details;
     int detailCount, detailCap;
     int *openPorts;
@@ -65,7 +77,7 @@ static void print_header(void) {
     printf("|  _  |___| |_|   __|___ ___ ___ \n");
     printf("|     |  _|  _|__   |  _| .'|   |\n");
     printf("|__|__|_| |_| |_____|___|__,|_|_|\n");
-    printf("\033[32mArtScan by @art3x (Linux) ver 1.3\033[0m\n");
+    printf("\033[32mArtScan by @art3x (Linux) ver 1.4\033[0m\n");
     printf("\033[34mhttps://github.com/art3x\033[0m\n\n");
 }
 
@@ -84,6 +96,68 @@ static int is_http_like_port(int port) {
         default:
             return 0;
     }
+}
+
+// Generate specific UDP payloads to trigger responses
+static int get_udp_payload(int port, unsigned char *buf, int maxlen) {
+    memset(buf, 0, maxlen);
+    if (port == 53) { // DNS Query (A record for root)
+        unsigned char dns[] = {
+            0xAA, 0xAA, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x01, 0x00, 0x01
+        };
+        if (maxlen < sizeof(dns)) return 0;
+        memcpy(buf, dns, sizeof(dns));
+        return sizeof(dns);
+    } 
+    else if (port == 123) { // NTP Client (Mode 3)
+        unsigned char ntp[] = { 0xE3, 0x00, 0x06, 0xEC }; // LI, VN, Mode
+        if (maxlen < 48) return 0; // NTP header is 48 bytes
+        memcpy(buf, ntp, 4);
+        return 48;
+    }
+    else if (port == 137) { // NetBIOS Status Query
+        unsigned char nb[] = {
+            0x00, 0x00, 0x00, 0x10, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x20, 0x43, 0x4B, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+            0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+            0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x00, 0x00, 0x21, 0x00, 0x01
+        };
+        if (maxlen < sizeof(nb)) return 0;
+        memcpy(buf, nb, sizeof(nb));
+        return sizeof(nb);
+    }
+    else if (port == 161) { // SNMPv1 public get-next (sysDescr)
+        unsigned char snmp[] = {
+            0x30, 0x26, 0x02, 0x01, 0x00, 0x04, 0x06, 0x70, 0x75, 0x62, 0x6C, 0x69,
+            0x63, 0xA1, 0x19, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00,
+            0x30, 0x0E, 0x30, 0x0C, 0x06, 0x08, 0x2B, 0x06, 0x01, 0x02, 0x01, 0x01,
+            0x01, 0x00, 0x05, 0x00
+        };
+        if (maxlen < sizeof(snmp)) return 0;
+        memcpy(buf, snmp, sizeof(snmp));
+        return sizeof(snmp);
+    }
+    else if (port == 1900) { // SSDP
+        const char *ssdp = "M-SEARCH * HTTP/1.1\r\nHost: 239.255.255.250:1900\r\nST: ssdp:all\r\nMan: \"ssdp:discover\"\r\nMX: 3\r\n\r\n";
+        int len = strlen(ssdp);
+        if (maxlen < len) return 0;
+        memcpy(buf, ssdp, len);
+        return len;
+    }
+    else if (port == 5060) { // SIP Options
+        const char *sip = "OPTIONS sip:nm SIP/2.0\r\nContent-Length: 0\r\n\r\n";
+        int len = strlen(sip);
+        if (maxlen < len) return 0;
+        memcpy(buf, sip, len);
+        return len;
+    }
+    // Generic payload for others
+    if (maxlen > 0) {
+        buf[0] = 0x00;
+        return 1;
+    }
+    return 0;
 }
 
 static void summarize_http(const char *resp, char *out, size_t outsz) {
@@ -407,7 +481,7 @@ static void *worker_ping(void *_) {
 }
 
 
-// Port scan worker thread (with retries)
+// Port scan worker thread (with retries, supports TCP and UDP)
 static void *worker_port(void *_) {
     int total = g_ipCount * g_portCount;
     while (1) {
@@ -424,61 +498,103 @@ static void *worker_port(void *_) {
         char httpInfo[256] = {0};
 
         for (int attempt = 0; attempt <= g_rechecks; attempt++) {
-            int sock = socket(AF_INET, SOCK_STREAM, 0);
-            if (sock < 0) continue;
+            
+            if (g_udpEnabled) {
+                // UDP SCAN MODE
+                int sock = socket(AF_INET, SOCK_DGRAM, 0);
+                if (sock < 0) continue;
 
-            fcntl(sock, F_SETFL, O_NONBLOCK);
-            struct sockaddr_in sa = {.sin_family = AF_INET, .sin_port = htons(port)};
-            inet_pton(AF_INET, g_ipResults[idx].ip, &sa.sin_addr);
-            connect(sock, (void*)&sa, sizeof(sa));
-
-            fd_set wf; FD_ZERO(&wf); FD_SET(sock, &wf);
-            struct timeval tvc = {g_ctimeout / 1000, (g_ctimeout % 1000) * 1000};
-
-            if (select(sock + 1, NULL, &wf, NULL, &tvc) > 0) {
-                int err = 0; socklen_t el = sizeof(err);
-                if (!getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &el) && err == 0) {
-                    struct timeval rto = {g_ctimeout / 1000, (g_ctimeout % 1000) * 1000};
-                    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &rto, sizeof(rto));
-                    fcntl(sock, F_SETFL, fcntl(sock, F_GETFL, 0) & ~O_NONBLOCK);
-
-                    if (is_http_like_port(port)) {
-                        char req[256];
-                        snprintf(req, sizeof(req),
-                                 "GET / HTTP/1.0\r\nHost: %s\r\nUser-Agent: ascan\r\nConnection: close\r\n\r\n",
-                                 g_ipResults[idx].ip);
-                        send(sock, req, strlen(req), 0);
-                        char resp[2048];
-                        int total = 0;
-                        while (total < (int)sizeof(resp) - 1) {
-                            int n = recv(sock, resp + total, sizeof(resp) - 1 - total, 0);
-                            if (n <= 0) break;
-                            total += n;
-                            if (strstr(resp, "\r\n\r\n")) break; // got headers
+                fcntl(sock, F_SETFL, O_NONBLOCK);
+                struct sockaddr_in sa = {.sin_family = AF_INET, .sin_port = htons(port)};
+                inet_pton(AF_INET, g_ipResults[idx].ip, &sa.sin_addr);
+                
+                // Connect allows using send/recv and filtering ICMP errors implicitly on some systems
+                if (connect(sock, (void*)&sa, sizeof(sa)) == 0) {
+                    unsigned char payload[512];
+                    int plen = get_udp_payload(port, payload, sizeof(payload));
+                    
+                    if (send(sock, payload, plen, 0) == plen) {
+                        fd_set rf; FD_ZERO(&rf); FD_SET(sock, &rf);
+                        struct timeval tvc = {g_ctimeout / 1000, (g_ctimeout % 1000) * 1000};
+                        
+                        if (select(sock + 1, &rf, NULL, NULL, &tvc) > 0) {
+                            int n = recv(sock, banner, sizeof(banner)-1, 0);
+                            if (n >= 0) {
+                                // Data received - Port is OPEN
+                                banner[n] = '\0';
+                                // Sanitize binary data for display
+                                for(int k=0; k<n; k++) {
+                                    if(!isprint(banner[k]) && banner[k] != '\r' && banner[k] != '\n') banner[k] = '.';
+                                }
+                                
+                                snprintf(msg, sizeof(msg), "%s:%d \033[36mopen (UDP)\033[0m", g_ipResults[idx].ip, port);
+                                add_open(idx, port);
+                                add_detail(idx, msg);
+                                open_success = 1;
+                            }
                         }
-                        resp[total] = '\0';
-                        summarize_http(resp, httpInfo, sizeof(httpInfo));
                     }
-
-                    if (!httpInfo[0]) {
-                        memset(banner, 0, sizeof(banner));
-                        int n = recv(sock, banner, sizeof(banner) - 1, 0);
-                        if (n > 0) { banner[n] = '\0'; char *p = strpbrk(banner, "\r\n"); if (p) *p = '\0'; }
-                    }
-
-                    if (httpInfo[0]) {
-                        snprintf(msg, sizeof(msg), "%s:%d \033[32mopen\033[0m. %s", g_ipResults[idx].ip, port, httpInfo);
-                    } else if (banner[0]) {
-                        snprintf(msg, sizeof(msg), "%s:%d \033[32mopen\033[0m %s", g_ipResults[idx].ip, port, banner);
-                    } else {
-                        snprintf(msg, sizeof(msg), "%s:%d \033[32mopen\033[0m", g_ipResults[idx].ip, port);
-                    }
-                    add_open(idx, port);
-                    add_detail(idx, msg);
-                    open_success = 1;
                 }
+                close(sock);
+            } 
+            else {
+                // TCP SCAN MODE
+                int sock = socket(AF_INET, SOCK_STREAM, 0);
+                if (sock < 0) continue;
+
+                fcntl(sock, F_SETFL, O_NONBLOCK);
+                struct sockaddr_in sa = {.sin_family = AF_INET, .sin_port = htons(port)};
+                inet_pton(AF_INET, g_ipResults[idx].ip, &sa.sin_addr);
+                connect(sock, (void*)&sa, sizeof(sa));
+
+                fd_set wf; FD_ZERO(&wf); FD_SET(sock, &wf);
+                struct timeval tvc = {g_ctimeout / 1000, (g_ctimeout % 1000) * 1000};
+
+                if (select(sock + 1, NULL, &wf, NULL, &tvc) > 0) {
+                    int err = 0; socklen_t el = sizeof(err);
+                    if (!getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &el) && err == 0) {
+                        struct timeval rto = {g_ctimeout / 1000, (g_ctimeout % 1000) * 1000};
+                        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &rto, sizeof(rto));
+                        fcntl(sock, F_SETFL, fcntl(sock, F_GETFL, 0) & ~O_NONBLOCK);
+
+                        if (is_http_like_port(port)) {
+                            char req[256];
+                            snprintf(req, sizeof(req),
+                                     "GET / HTTP/1.0\r\nHost: %s\r\nUser-Agent: ascan\r\nConnection: close\r\n\r\n",
+                                     g_ipResults[idx].ip);
+                            send(sock, req, strlen(req), 0);
+                            char resp[2048];
+                            int total = 0;
+                            while (total < (int)sizeof(resp) - 1) {
+                                int n = recv(sock, resp + total, sizeof(resp) - 1 - total, 0);
+                                if (n <= 0) break;
+                                total += n;
+                                if (strstr(resp, "\r\n\r\n")) break; // got headers
+                            }
+                            resp[total] = '\0';
+                            summarize_http(resp, httpInfo, sizeof(httpInfo));
+                        }
+
+                        if (!httpInfo[0]) {
+                            memset(banner, 0, sizeof(banner));
+                            int n = recv(sock, banner, sizeof(banner) - 1, 0);
+                            if (n > 0) { banner[n] = '\0'; char *p = strpbrk(banner, "\r\n"); if (p) *p = '\0'; }
+                        }
+
+                        if (httpInfo[0]) {
+                            snprintf(msg, sizeof(msg), "%s:%d \033[32mopen\033[0m. %s", g_ipResults[idx].ip, port, httpInfo);
+                        } else if (banner[0]) {
+                            snprintf(msg, sizeof(msg), "%s:%d \033[32mopen\033[0m %s", g_ipResults[idx].ip, port, banner);
+                        } else {
+                            snprintf(msg, sizeof(msg), "%s:%d \033[32mopen\033[0m", g_ipResults[idx].ip, port);
+                        }
+                        add_open(idx, port);
+                        add_detail(idx, msg);
+                        open_success = 1;
+                    }
+                }
+                close(sock);
             }
-            close(sock);
             if (open_success) break;
         }
         atomic_fetch_add(&g_portProgress, 1);
@@ -497,6 +613,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-Pn")) g_pingEnabled = 0;
         else if (!strcmp(argv[i], "-i")) g_isPingOnly = 1;
         else if (!strcmp(argv[i], "-Nb")) g_netbiosEnabled = 1;
+        else if (!strcmp(argv[i], "-u")) g_udpEnabled = 1;
         else if (!strcmp(argv[i], "-h")) {
             printf("Usage: %s <target> [ports] [options]\n", argv[0]);
             printf("  target:    Hostname (e.g., scanme.nmap.org), single IP, or range (192.168.1.1-100)\n");
@@ -507,6 +624,7 @@ int main(int argc, char **argv) {
             printf("  -r <num>:  Set extra rechecks for unanswered ports (default: %d)\n", 0);
             printf("  -Pn:       Disable ping (skip host discovery)\n");
             printf("  -i:        Perform icmp scan only (skip port scan)\n");
+            printf("  -u:        Perform UDP scan instead of TCP\n");
             printf("  -Nb:       Enable hostname resolution via reverse DNS lookup\n");
             printf("  -h:        Display this help message\n");
             return 0;
@@ -520,7 +638,11 @@ int main(int argc, char **argv) {
     print_header();
 
     if (!targetSpec) { fprintf(stderr, "Error: Target required. Use -h for help.\n"); return 1; }
-    if (!portSpec && !g_isPingOnly) portSpec = (char*)DEFAULT_PORTS;
+    
+    // Select default ports based on protocol if not provided
+    if (!portSpec && !g_isPingOnly) {
+        portSpec = (char*)(g_udpEnabled ? DEFAULT_UDP_PORTS : DEFAULT_PORTS);
+    }
 
     char startIp[INET_ADDRSTRLEN], endIp[INET_ADDRSTRLEN];
     if (parse_ip_range_spec(targetSpec, startIp, endIp)) {
@@ -541,10 +663,13 @@ int main(int argc, char **argv) {
     printf("\033[97m");
     printf("[.] Scanning Target: %s\n", targetSpec);
     if (!g_isPingOnly) {
-        printf("[.] PORT(s): %s\n", portSpec == DEFAULT_PORTS ? "TOP 123" : portSpec);
+        if (portSpec == DEFAULT_PORTS) printf("[.] PORT(s): TOP 123 (TCP)\n");
+        else if (portSpec == DEFAULT_UDP_PORTS) printf("[.] PORT(s): TOP 57 (UDP)\n");
+        else printf("[.] PORT(s): %s\n", portSpec);
     } else {
         printf("[.] Ping-only scan mode\n");
     }
+    printf("[.] Protocol: %s\n", g_udpEnabled ? "UDP" : "TCP");
     printf("[.] Threads: %d   Rechecks: %d   Timeout: %d\n", g_threadLimit, g_rechecks, g_ctimeout);
     if (!g_pingEnabled) printf("[.] Ping disabled (-Pn flag used)\n");
     printf("\033[0m\n");
@@ -573,7 +698,7 @@ int main(int argc, char **argv) {
 
     if (!g_isPingOnly) {
         long totalPorts = (long)g_ipCount * (long)g_portCount;
-        ProgressCtx portCtx = {.label = "Ports", .counter = &g_portProgress, .total = (int)totalPorts};
+        ProgressCtx portCtx = {.label = g_udpEnabled ? "UDP" : "TCP", .counter = &g_portProgress, .total = (int)totalPorts};
         atomic_init(&portCtx.stopFlag, 0);
         pthread_t portProgThread;
         int usePortProgress = totalPorts > 0;

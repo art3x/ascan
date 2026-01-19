@@ -1,13 +1,14 @@
 # ArtScan (Linux version 🐧)
 
-ArtScan is a tiny, convenient, and very fast port scanner written in C. It is perfect for pentesting and red team engagements. Its size is only **25 KB**.
+ArtScan is a tiny, convenient, and very fast port scanner written in C. It is perfect for pentesting and red team engagements.
 
 ![ArtScan](images/ascan.png)
 
 ## Features
 
 * IP ranges and port ranges scan with threads and timeout adjustments
-* Super fast smart scan of TOP 123 most common ports by default
+* Fast smart scan of TOP 123 most common ports (by default)
+* Fast smart scan of TOP 57 UDP most common ports
 * Scan progress
 * Perform ping scan only (skip port scan)
 * Capture banners and HTTP responses on open ports
@@ -35,6 +36,7 @@ Options:
   -r <num>:  Set extra rechecks for unanswered ports (default: 0)
   -Pn:       Disable ping (skip host discovery)
   -i:        Perform icmp scan only (skip port scan)
+  -u:        Perform UDP scan instead of TCP
   -Nb:       Enable hostname resolution via reverse DNS lookup
   -h:        Display this help message
 

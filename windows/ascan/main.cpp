@@ -14,13 +14,12 @@
 
 #include "output.h"
 #pragma comment(lib, "Ws2_32.lib")
-#pragma comment(lib, "iphlpapi.lib")  // Provides IcmpSendEcho and related functions.
+#pragma comment(lib, "iphlpapi.lib")
 
 int main(int argc, char* argv[]);
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     LPSTR lpCmdLine, int nCmdShow) {
-    // Optionally, parse lpCmdLine or use __argv/__argc.
     return main(__argc, __argv);
 }
 
@@ -30,43 +29,43 @@ Output* output = NULL;
 #define G_THREAD_LIMIT 20
 #define G_TIMEOUT_DEFAULT 300
 #define G_RECHECKS 0
-// Global configuration variables (with defaults)
-int g_threadLimit = G_THREAD_LIMIT; // default number of concurrent threads
-static int g_ctimeout = G_TIMEOUT_DEFAULT; // port scan timeout in msec (default: 300)
-int g_rechecks = G_RECHECKS;     // default extra rechecks if a port is closed
+
+// Global configuration variables
+int g_threadLimit = G_THREAD_LIMIT;
+static int g_ctimeout = G_TIMEOUT_DEFAULT;
+int g_rechecks = G_RECHECKS; // Rechecks global
 
 // Console ANSI capability
 bool g_supportsANSI = false;
 
-// Globals for ping functionality:
-static int g_pingEnabled = 1; // if nonzero, perform ping check (default ON)
-static int g_isPingOnly = 0;  // if nonzero, perform ping-only scan
-
-// Global flag for hostname resolution (like ping -a). Default is OFF.
+// Scan settings
+static int g_pingEnabled = 1;
+static int g_isPingOnly = 0;
 static int g_netbiosEnabled = 0;
+static int g_udpEnabled = 0; // UDP Flag
 
 static LONG g_pingProgress = 0;
 static LONG g_portProgress = 0;
 static bool g_headerPrintedStdout = false;
 
 // ----------------------
-// Global Structures for Grouping Results
+// Global Structures
 // ----------------------
 typedef struct _IPResult {
     char ip[INET_ADDRSTRLEN];
-    char netbiosName[256]; // To store the hostname (resolved via ICMP)
-    char** details;        // Array of detailed message strings for each open port or ping result.
+    char netbiosName[256];
+    char** details;
     int detailCount;
     int detailCapacity;
-    int* openPorts;        // Array of open port numbers (for summary). In ping-only mode, a dummy value (0) is added.
+    int* openPorts;
     int openCount;
     int openCapacity;
-    CRITICAL_SECTION cs;   // To protect updates to this IP's result.
-    int responded;         // set to 1 if the IP responded to ping.
+    CRITICAL_SECTION cs;
+    int responded;
 } IPResult;
 
 static IPResult* g_ipResults = NULL;
-static int g_ipCount = 0;  // Number of IPs in the range
+static int g_ipCount = 0;
 
 static void print_header_stdout() {
     if (g_supportsANSI) printf("\033[36m");
@@ -75,19 +74,15 @@ static void print_header_stdout() {
     printf("|     |  _|  _|__   |  _| .'|   |\n");
     printf("|__|__|_| |_| |_____|___|__,|_|_|\n");
     if (g_supportsANSI) printf("\033[32m");
-    printf("ArtScan by @art3x (Windows) ver 1.3\n");
+    printf("ArtScan by @art3x (Windows) ver 1.4\n");
     if (g_supportsANSI) printf("\033[34m");
     printf("https://github.com/art3x\n");
     if (g_supportsANSI) printf("\033[0m");
     printf("\n");
 }
 
-
 static void cleanup_ip_results() {
-    if (!g_ipResults) {
-        return;
-    }
-
+    if (!g_ipResults) return;
     for (int i = 0; i < g_ipCount; i++) {
         IPResult* ipRes = &g_ipResults[i];
         DeleteCriticalSection(&ipRes->cs);
@@ -97,21 +92,16 @@ static void cleanup_ip_results() {
         free(ipRes->details);
         free(ipRes->openPorts);
     }
-
     free(g_ipResults);
     g_ipResults = NULL;
     g_ipCount = 0;
 }
 
-// ----------------------
-// Helper: Check if the console has virtual terminal for ANSI
-// ----------------------
 void initConsoleColorSupport() {
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     if (hOut != INVALID_HANDLE_VALUE) {
         DWORD dwMode = 0;
         if (GetConsoleMode(hOut, &dwMode)) {
-            // Check if the console has virtual terminal processing enabled.
             if (dwMode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) {
                 g_supportsANSI = true;
             }
@@ -119,37 +109,25 @@ void initConsoleColorSupport() {
     }
 }
 
-
-// ----------------------
-// Helper: Append a result for an IP (thread-safe)
-// ----------------------
 void add_ip_result(int ipIndex, int port, const char* message) {
-    if (ipIndex < 0 || ipIndex >= g_ipCount)
-        return;
+    if (ipIndex < 0 || ipIndex >= g_ipCount) return;
     IPResult* ipRes = &g_ipResults[ipIndex];
     EnterCriticalSection(&ipRes->cs);
-    // Append the detailed message.
+
     if (ipRes->detailCount >= ipRes->detailCapacity) {
         int newCapacity = (ipRes->detailCapacity == 0) ? 4 : ipRes->detailCapacity * 2;
         char** newDetails = (char**)realloc(ipRes->details, newCapacity * sizeof(char*));
-        if (!newDetails) {
-            LeaveCriticalSection(&ipRes->cs);
-            return;
-        }
+        if (!newDetails) { LeaveCriticalSection(&ipRes->cs); return; }
         ipRes->details = newDetails;
         ipRes->detailCapacity = newCapacity;
     }
     ipRes->details[ipRes->detailCount] = _strdup(message);
     ipRes->detailCount++;
 
-    // Also add the port number to the openPorts list.
     if (ipRes->openCount >= ipRes->openCapacity) {
         int newCapacity = (ipRes->openCapacity == 0) ? 4 : ipRes->openCapacity * 2;
         int* newPorts = (int*)realloc(ipRes->openPorts, newCapacity * sizeof(int));
-        if (!newPorts) {
-            LeaveCriticalSection(&ipRes->cs);
-            return;
-        }
+        if (!newPorts) { LeaveCriticalSection(&ipRes->cs); return; }
         ipRes->openPorts = newPorts;
         ipRes->openCapacity = newCapacity;
     }
@@ -157,13 +135,8 @@ void add_ip_result(int ipIndex, int port, const char* message) {
     LeaveCriticalSection(&ipRes->cs);
 }
 
-// ----------------------
-// Helper: For sorting
-// ----------------------
 int cmp_int(const void* a, const void* b) {
-    int int_a = *(const int*)a;
-    int int_b = *(const int*)b;
-    return int_a - int_b;
+    return (*(const int*)a) - (*(const int*)b);
 }
 
 static const char* strcasestr_local(const char* haystack, const char* needle) {
@@ -175,6 +148,62 @@ static const char* strcasestr_local(const char* haystack, const char* needle) {
     return NULL;
 }
 
+// ----------------------
+// UDP Payload Helper
+// ----------------------
+int get_udp_payload(int port, char* buffer, int bufSize) {
+    memset(buffer, 0, bufSize);
+
+    // DNS (53)
+    if (port == 53) {
+        char dnsPkt[] =
+            "\xAA\xAA\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+            "\x06google\x03com\x00\x00\x01\x00\x01";
+        if (bufSize >= sizeof(dnsPkt) - 1) {
+            memcpy(buffer, dnsPkt, sizeof(dnsPkt) - 1);
+            return sizeof(dnsPkt) - 1;
+        }
+    }
+    // NTP (123)
+    else if (port == 123) {
+        char ntpPkt[48] = { 0 };
+        ntpPkt[0] = 0x1B;
+        if (bufSize >= 48) {
+            memcpy(buffer, ntpPkt, 48);
+            return 48;
+        }
+    }
+    // SNMP (161)
+    else if (port == 161) {
+        char snmpPkt[] = "\x30\x26\x02\x01\x01\x04\x06\x70\x75\x62\x6c\x69\x63\xa1\x19\x02\x04\x1a\x2b\x3c\x4d\x02\x01\x00\x02\x01\x00\x30\x0b\x30\x09\x06\x05\x2b\x06\x01\x02\x01\x05\x00";
+        if (bufSize >= sizeof(snmpPkt) - 1) {
+            memcpy(buffer, snmpPkt, sizeof(snmpPkt) - 1);
+            return sizeof(snmpPkt) - 1;
+        }
+    }
+    // NetBIOS NS (137)
+    else if (port == 137) {
+        char nbPkt[] = "\x80\x96\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x20\x43\x4b\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x00\x00\x21\x00\x01";
+        if (bufSize >= sizeof(nbPkt) - 1) {
+            memcpy(buffer, nbPkt, sizeof(nbPkt) - 1);
+            return sizeof(nbPkt) - 1;
+        }
+    }
+    // SSDP (1900)
+    else if (port == 1900) {
+        const char* ssdp = "M-SEARCH * HTTP/1.1\r\nHost: 239.255.255.250:1900\r\nST: ssdp:all\r\nMan: \"ssdp:discover\"\r\nMX: 3\r\n\r\n";
+        if (bufSize >= (int)strlen(ssdp)) {
+            strcpy(buffer, ssdp);
+            return (int)strlen(ssdp);
+        }
+    }
+
+    return 0;
+}
+
+// ----------------------
+// HTTP Helper (TCP only)
+// ----------------------
 static int is_http_like_port(int port) {
     switch (port) {
     case 80: case 443: case 8000: case 8008: case 8080: case 8081:
@@ -298,46 +327,28 @@ unsigned __stdcall progress_thread(void* param) {
     return 0;
 }
 
-
 // ----------------------
-// Ping Functionality
+// Ping
 // ----------------------
-
-// Define echo data and reply size constants.
 #define ICMP_ECHO_DATA "abcdefghijklmnopqrstuvwabdcefghi"
 #define ICMP_REPLY_SIZE (sizeof(ICMP_ECHO_REPLY) + sizeof(ICMP_ECHO_DATA))
-#define ICMP_TIMEOUT_DEFAULT 1800 // in milliseconds
+#define ICMP_TIMEOUT_DEFAULT 1800 
 
-// ping_ip() uses the ICMP API (via iphlpapi/icmpapi) to send an echo request.
 DWORD ping_ip(HANDLE hIcmpFile, IPAddr ip, PICMP_ECHO_REPLY reply) {
     IP_OPTION_INFORMATION options = { 0 };
-    options.Ttl = 128; // Use a typical TTL value.
+    options.Ttl = 128;
     return IcmpSendEcho2(
-        hIcmpFile,
-        NULL,          // no event
-        NULL,          // no APC routine
-        NULL,          // no APC context
-        ip,
-        (LPVOID)ICMP_ECHO_DATA,
-        sizeof(ICMP_ECHO_DATA) - 1,
-        &options,
-        reply,
-        ICMP_REPLY_SIZE,
-        ICMP_TIMEOUT_DEFAULT
+        hIcmpFile, NULL, NULL, NULL, ip,
+        (LPVOID)ICMP_ECHO_DATA, sizeof(ICMP_ECHO_DATA) - 1,
+        &options, reply, ICMP_REPLY_SIZE, ICMP_TIMEOUT_DEFAULT
     );
 }
 
-// ----------------------
-// Ping Thread Data Structure
-// ----------------------
 typedef struct _PingThreadData {
     char ip[INET_ADDRSTRLEN];
     int ipIndex;
 } PingThreadData;
 
-// ----------------------
-// Ping Thread Function
-// ----------------------
 unsigned __stdcall ping_thread(void* param) {
     PingThreadData* data = (PingThreadData*)param;
     HANDLE hIcmp = IcmpCreateFile();
@@ -356,9 +367,7 @@ unsigned __stdcall ping_thread(void* param) {
     PICMP_ECHO_REPLY reply = (PICMP_ECHO_REPLY)replyBuffer;
     DWORD dwRetVal = ping_ip(hIcmp, ipAddr, reply);
     if (dwRetVal != 0 && reply->Status == IP_SUCCESS) {
-        // Mark this IP as having responded.
         InterlockedExchange((volatile LONG*)&g_ipResults[data->ipIndex].responded, 1);
-        // If hostname resolution is enabled, perform reverse lookup using getnameinfo
         if (g_netbiosEnabled) {
             struct sockaddr_in sa;
             memset(&sa, 0, sizeof(sa));
@@ -389,7 +398,7 @@ unsigned __stdcall ping_thread(void* param) {
 }
 
 // ----------------------
-// Port and IP Parsing Functions
+// Parsing
 // ----------------------
 int parse_ports(const char* input, int** ports, int* count) {
     if (!input || !ports || !count) return 0;
@@ -492,12 +501,10 @@ int parse_ip_range(const char* input, char* startIp, char* endIp) {
         strncpy(startIp, input, len);
         startIp[len] = '\0';
         if (strchr(dash + 1, '.') == NULL) {
-            // For shorthand notation like "192.168.1.1-100"
             strncpy(endIp, startIp, INET_ADDRSTRLEN);
             endIp[INET_ADDRSTRLEN - 1] = '\0';
             char* lastDot = strrchr(endIp, '.');
-            if (!lastDot)
-                return 0;
+            if (!lastDot) return 0;
             size_t remain = INET_ADDRSTRLEN - (lastDot - endIp + 1);
             snprintf(lastDot + 1, remain, "%s", dash + 1);
         }
@@ -511,8 +518,7 @@ int parse_ip_range(const char* input, char* startIp, char* endIp) {
 
 uint32_t ip_to_int(const char* ip) {
     struct in_addr addr;
-    if (inet_pton(AF_INET, ip, &addr) != 1)
-        return 0;
+    if (inet_pton(AF_INET, ip, &addr) != 1) return 0;
     return ntohl(addr.s_addr);
 }
 
@@ -522,42 +528,30 @@ void int_to_ip(uint32_t ipInt, char* buffer) {
     inet_ntop(AF_INET, &addr, buffer, INET_ADDRSTRLEN);
 }
 
-// ----------------------
-// DNS Resolution Helper
-// ----------------------
 int resolve_hostname_to_ip(const char* hostname, char* ip_buffer, size_t buffer_len) {
     struct addrinfo hints, * result;
     int status;
-
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET; // Force IPv4 to match the rest of the code
+    hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
-
     status = getaddrinfo(hostname, NULL, &hints, &result);
-    if (status != 0) {
-        return 0; // Failed to resolve
-    }
-
-    // We only need the first result
+    if (status != 0) return 0;
     struct sockaddr_in* ipv4 = (struct sockaddr_in*)result->ai_addr;
-
-    // Convert the IP address to a string
     if (inet_ntop(AF_INET, &ipv4->sin_addr, ip_buffer, buffer_len) == NULL) {
         freeaddrinfo(result);
-        return 0; // Conversion failed
+        return 0;
     }
-
     freeaddrinfo(result);
-    return 1; // Success
+    return 1;
 }
 
 // ----------------------
-// Multithreaded Port Scanner Functions
+// Core Scanning Logic (TCP + UDP)
 // ----------------------
 typedef struct _ThreadData {
     char ip[INET_ADDRSTRLEN];
     int port;
-    int ipIndex; // Index into the global IP results array.
+    int ipIndex;
 } ThreadData;
 
 int scan_port(const char* ip, int port, int ipIndex) {
@@ -565,107 +559,158 @@ int scan_port(const char* ip, int port, int ipIndex) {
     int attempt;
     int success = 0;
     char message[1024] = { 0 };
+    int ctimeout = g_ctimeout;
+    const char* greenStart = g_supportsANSI ? "\033[32m" : "";
+    const char* greenEnd = g_supportsANSI ? "\033[0m" : "";
 
     for (attempt = 0; attempt < totalAttempts; attempt++) {
-        SOCKET sock;
-        struct sockaddr_in server;
-        char buffer[1024];
-        int result;
-        int ctimeout = g_ctimeout; // use configurable timeout
-        fd_set writefds;
-        struct timeval tv;
+        if (g_udpEnabled) {
+            // ================= UDP SCAN =================
+            SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+            if (sock == INVALID_SOCKET) continue;
 
-        sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (sock == INVALID_SOCKET)
-            continue;
+            struct sockaddr_in server;
+            memset(&server, 0, sizeof(server));
+            server.sin_family = AF_INET;
+            server.sin_port = htons(port);
+            inet_pton(AF_INET, ip, &server.sin_addr);
 
-        DWORD timeout = (DWORD)(ctimeout > 0 ? ctimeout : 100);
-        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
-        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout));
-
-        // Set non-blocking mode.
-        u_long mode = 1;
-        ioctlsocket(sock, FIONBIO, &mode);
-
-        memset(&server, 0, sizeof(server));
-        server.sin_family = AF_INET;
-        server.sin_port = htons(port);
-        inet_pton(AF_INET, ip, &server.sin_addr);
-
-        if (connect(sock, (struct sockaddr*)&server, sizeof(server)) == SOCKET_ERROR) {
-            if (WSAGetLastError() == WSAEWOULDBLOCK) {
-                FD_ZERO(&writefds);
-                FD_SET(sock, &writefds);
-                tv.tv_sec = ctimeout / 1000;
-                tv.tv_usec = (ctimeout % 1000) * 1000;
-                int res = select(0, NULL, &writefds, NULL, &tv);
-                if (!(res > 0 && FD_ISSET(sock, &writefds))) {
-                    closesocket(sock);
-                    continue;
-                }
-                int err = 0; int errlen = sizeof(err);
-                if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen) != 0 || err != 0) {
-                    closesocket(sock);
-                    continue;
-                }
-            }
-            else {
+            if (connect(sock, (struct sockaddr*)&server, sizeof(server)) == SOCKET_ERROR) {
                 closesocket(sock);
                 continue;
             }
-        }
 
-        // Restore blocking mode.
-        mode = 0;
-        ioctlsocket(sock, FIONBIO, &mode);
+            char udpPayload[512];
+            int pLoadSize = get_udp_payload(port, udpPayload, sizeof(udpPayload));
 
-        char httpInfo[256] = { 0 };
-        memset(buffer, 0, sizeof(buffer));
-
-        if (is_http_like_port(port)) {
-            char httpRequest[256];
-            snprintf(httpRequest, sizeof(httpRequest),
-                "GET / HTTP/1.0\r\nHost: %s\r\nUser-Agent: ascan\r\nConnection: close\r\n\r\n",
-                ip);
-            send(sock, httpRequest, (int)strlen(httpRequest), 0);
-            char httpResponse[2048];
-            int totalReceived = 0;
-            while (totalReceived < (int)sizeof(httpResponse) - 1) {
-                int recvResult = recv(sock, httpResponse + totalReceived, sizeof(httpResponse) - totalReceived - 1, 0);
-                if (recvResult <= 0) break;
-                totalReceived += recvResult;
+            if (send(sock, udpPayload, pLoadSize, 0) == SOCKET_ERROR) {
+                closesocket(sock);
+                continue;
             }
-            httpResponse[totalReceived] = '\0';
-            summarize_http(httpResponse, httpInfo, sizeof(httpInfo));
-        }
 
-        if (!httpInfo[0]) {
-            result = recv(sock, buffer, sizeof(buffer) - 1, 0);
-            if (result > 0) {
-                buffer[result] = '\0';
-                char* newline = strpbrk(buffer, "\r\n");
-                if (newline) *newline = '\0';
-                if (strncmp(buffer, "HTTP/", 5) == 0) {
-                    summarize_http(buffer, httpInfo, sizeof(httpInfo));
+            fd_set readfds;
+            FD_ZERO(&readfds);
+            FD_SET(sock, &readfds);
+            struct timeval tv;
+            tv.tv_sec = ctimeout / 1000;
+            tv.tv_usec = (ctimeout % 1000) * 1000;
+
+            int res = select(0, &readfds, NULL, NULL, &tv);
+
+            if (res > 0 && FD_ISSET(sock, &readfds)) {
+                char recvBuf[1024];
+                int recvLen = recv(sock, recvBuf, sizeof(recvBuf) - 1, 0);
+                if (recvLen >= 0) {
+                    snprintf(message, sizeof(message), "%s:%d %sopen%s (UDP response)", ip, port, greenStart, greenEnd);
+                    success = 1;
+                    closesocket(sock);
+                    add_ip_result(ipIndex, port, message);
+                    break;
+                }
+                else {
+                    if (WSAGetLastError() == WSAECONNRESET) {
+                        // ICMP Port Unreachable -> CLOSED
+                    }
                 }
             }
-        }
-
-        const char* greenStart = g_supportsANSI ? "\033[32m" : "";
-        const char* greenEnd = g_supportsANSI ? "\033[0m" : "";
-        if (httpInfo[0]) {
-            snprintf(message, sizeof(message), "%s:%d %sopen%s. %s", ip, port, greenStart, greenEnd, httpInfo);
-        }
-        else if (buffer[0]) {
-            snprintf(message, sizeof(message), "%s:%d %sopen%s %s", ip, port, greenStart, greenEnd, buffer);
+            closesocket(sock);
         }
         else {
-            snprintf(message, sizeof(message), "%s:%d %sopen%s", ip, port, greenStart, greenEnd);
+            // ================= TCP SCAN =================
+            SOCKET sock;
+            struct sockaddr_in server;
+            char buffer[1024];
+            int result;
+            fd_set writefds;
+            struct timeval tv;
+
+            sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+            if (sock == INVALID_SOCKET) continue;
+
+            DWORD timeout = (DWORD)(ctimeout > 0 ? ctimeout : 100);
+            setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+            setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout));
+
+            u_long mode = 1;
+            ioctlsocket(sock, FIONBIO, &mode);
+
+            memset(&server, 0, sizeof(server));
+            server.sin_family = AF_INET;
+            server.sin_port = htons(port);
+            inet_pton(AF_INET, ip, &server.sin_addr);
+
+            if (connect(sock, (struct sockaddr*)&server, sizeof(server)) == SOCKET_ERROR) {
+                if (WSAGetLastError() == WSAEWOULDBLOCK) {
+                    FD_ZERO(&writefds);
+                    FD_SET(sock, &writefds);
+                    tv.tv_sec = ctimeout / 1000;
+                    tv.tv_usec = (ctimeout % 1000) * 1000;
+                    int res = select(0, NULL, &writefds, NULL, &tv);
+                    if (!(res > 0 && FD_ISSET(sock, &writefds))) {
+                        closesocket(sock);
+                        continue;
+                    }
+                    int err = 0; int errlen = sizeof(err);
+                    if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen) != 0 || err != 0) {
+                        closesocket(sock);
+                        continue;
+                    }
+                }
+                else {
+                    closesocket(sock);
+                    continue;
+                }
+            }
+
+            mode = 0;
+            ioctlsocket(sock, FIONBIO, &mode);
+
+            char httpInfo[256] = { 0 };
+            memset(buffer, 0, sizeof(buffer));
+
+            if (is_http_like_port(port)) {
+                char httpRequest[256];
+                snprintf(httpRequest, sizeof(httpRequest),
+                    "GET / HTTP/1.0\r\nHost: %s\r\nUser-Agent: ascan\r\nConnection: close\r\n\r\n",
+                    ip);
+                send(sock, httpRequest, (int)strlen(httpRequest), 0);
+                char httpResponse[2048];
+                int totalReceived = 0;
+                while (totalReceived < (int)sizeof(httpResponse) - 1) {
+                    int recvResult = recv(sock, httpResponse + totalReceived, sizeof(httpResponse) - totalReceived - 1, 0);
+                    if (recvResult <= 0) break;
+                    totalReceived += recvResult;
+                }
+                httpResponse[totalReceived] = '\0';
+                summarize_http(httpResponse, httpInfo, sizeof(httpInfo));
+            }
+
+            if (!httpInfo[0]) {
+                result = recv(sock, buffer, sizeof(buffer) - 1, 0);
+                if (result > 0) {
+                    buffer[result] = '\0';
+                    char* newline = strpbrk(buffer, "\r\n");
+                    if (newline) *newline = '\0';
+                    if (strncmp(buffer, "HTTP/", 5) == 0) {
+                        summarize_http(buffer, httpInfo, sizeof(httpInfo));
+                    }
+                }
+            }
+
+            if (httpInfo[0]) {
+                snprintf(message, sizeof(message), "%s:%d %sopen%s. %s", ip, port, greenStart, greenEnd, httpInfo);
+            }
+            else if (buffer[0]) {
+                snprintf(message, sizeof(message), "%s:%d %sopen%s %s", ip, port, greenStart, greenEnd, buffer);
+            }
+            else {
+                snprintf(message, sizeof(message), "%s:%d %sopen%s", ip, port, greenStart, greenEnd);
+            }
+            success = 1;
+            closesocket(sock);
+            add_ip_result(ipIndex, port, message);
+            break;
         }
-        success = 1;
-        closesocket(sock);
-        add_ip_result(ipIndex, port, message);
-        break;
     }
     return success;
 }
@@ -679,7 +724,7 @@ unsigned __stdcall port_thread(void* param) {
 }
 
 // ----------------------
-// run_port_scan: Main scanning function.
+// run_port_scan
 // ----------------------
 int run_port_scan(const char* targetSpec, const char* portRange) {
     WSADATA wsaData;
@@ -690,14 +735,11 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
     g_pingProgress = 0;
     g_portProgress = 0;
 
-    // Record start time.
     DWORD startTime = GetTickCount();
 
     char startIp[INET_ADDRSTRLEN], endIp[INET_ADDRSTRLEN];
 
-    // Determine if the target is a range, a single IP, or a hostname.
     if (strchr(targetSpec, '-') != NULL) {
-        // Assume it's an IP range
         if (!parse_ip_range(targetSpec, startIp, endIp)) {
             append(output, "Invalid IP range format: %s\n", targetSpec);
             WSACleanup();
@@ -705,23 +747,17 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
         }
     }
     else {
-        // Single target: can be a hostname or an IP address.
-        // First, try to resolve as a hostname.
         if (resolve_hostname_to_ip(targetSpec, startIp, sizeof(startIp))) {
-            // Success, it was a hostname. Set end IP to the same.
             strncpy(endIp, startIp, INET_ADDRSTRLEN);
             append(output, "[+] Resolved %s -> %s\n", targetSpec, startIp);
         }
         else {
-            // Resolution failed. Check if it's a valid IP address literal.
             struct in_addr addr_test;
             if (inet_pton(AF_INET, targetSpec, &addr_test) == 1) {
-                // It's a valid IP address.
                 strncpy(startIp, targetSpec, INET_ADDRSTRLEN);
                 strncpy(endIp, targetSpec, INET_ADDRSTRLEN);
             }
             else {
-                // It's not a valid IP and couldn't be resolved.
                 append(output, "Error: Could not resolve hostname '%s' and it is not a valid IP or IP range.\n", targetSpec);
                 WSACleanup();
                 return -1;
@@ -749,7 +785,6 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
         return -1;
     }
 
-    // Initialize the global IP results array.
     g_ipCount = (int)(ipEnd - ipStart + 1);
     g_ipResults = (IPResult*)malloc(sizeof(IPResult) * g_ipCount);
     if (!g_ipResults) {
@@ -768,11 +803,10 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
         ipRes->openPorts = NULL;
         ipRes->openCount = 0;
         ipRes->openCapacity = 0;
-        ipRes->responded = 0; // Initialize as not responded.
+        ipRes->responded = 0;
         InitializeCriticalSection(&ipRes->cs);
     }
 
-    // If ping is enabled, spawn ping threads for all IPs.
     if (g_pingEnabled) {
         ProgressCtx pingCtx = { "Ping", &g_pingProgress, g_ipCount, 0 };
         HANDLE pingProgHandle = NULL;
@@ -796,8 +830,7 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
             int ipIndex = (int)(ip - ipStart);
 
             PingThreadData* data = (PingThreadData*)malloc(sizeof(PingThreadData));
-            if (!data)
-                continue;
+            if (!data) continue;
             strncpy(data->ip, ipStr, INET_ADDRSTRLEN);
             data->ip[INET_ADDRSTRLEN - 1] = '\0';
             data->ipIndex = ipIndex;
@@ -806,8 +839,7 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
             if (hThread != 0) {
                 if (pingThreadCount >= pingThreadCapacity) {
                     WaitForMultipleObjects(pingThreadCount, pingHandles, TRUE, INFINITE);
-                    for (int i = 0; i < pingThreadCount; i++)
-                        CloseHandle(pingHandles[i]);
+                    for (int i = 0; i < pingThreadCount; i++) CloseHandle(pingHandles[i]);
                     pingThreadCount = 0;
                 }
                 pingHandles[pingThreadCount++] = (HANDLE)hThread;
@@ -818,9 +850,7 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
         }
         if (pingThreadCount > 0) {
             WaitForMultipleObjects(pingThreadCount, pingHandles, TRUE, INFINITE);
-            for (int i = 0; i < pingThreadCount; i++) {
-                CloseHandle(pingHandles[i]);
-            }
+            for (int i = 0; i < pingThreadCount; i++) CloseHandle(pingHandles[i]);
         }
         free(pingHandles);
         if (pingProgHandle) {
@@ -830,13 +860,10 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
         }
     }
 
-    // If in ping-only mode, no further scanning is needed.
     if (g_isPingOnly) {
         WSACleanup();
     }
     else {
-        // For each IP that responded (if ping enabled) or for all IPs (if ping disabled),
-        // spawn port scanning threads.
         long portTaskTotal = 0;
         for (uint32_t ip = ipStart; ip <= ipEnd; ip++) {
             int ipIndex = (int)(ip - ipStart);
@@ -865,15 +892,12 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
             int_to_ip(ip, ipStr);
             int ipIndex = (int)(ip - ipStart);
 
-            // If ping is enabled, skip IPs that did not respond.
-            if (g_pingEnabled && !g_ipResults[ipIndex].responded)
-                continue;
+            if (g_pingEnabled && !g_ipResults[ipIndex].responded) continue;
 
             for (int i = 0; i < portCount; i++) {
                 int port = portList[i];
                 ThreadData* data = (ThreadData*)malloc(sizeof(ThreadData));
-                if (!data)
-                    continue;
+                if (!data) continue;
                 strncpy(data->ip, ipStr, INET_ADDRSTRLEN);
                 data->ip[INET_ADDRSTRLEN - 1] = '\0';
                 data->port = port;
@@ -882,8 +906,7 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
                 if (hThread != 0) {
                     if (threadCount >= capacity) {
                         WaitForMultipleObjects(threadCount, handles, TRUE, INFINITE);
-                        for (int i = 0; i < threadCount; i++)
-                            CloseHandle(handles[i]);
+                        for (int i = 0; i < threadCount; i++) CloseHandle(handles[i]);
                         threadCount = 0;
                     }
                     handles[threadCount++] = (HANDLE)hThread;
@@ -895,9 +918,7 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
         }
         if (threadCount > 0) {
             WaitForMultipleObjects(threadCount, handles, TRUE, INFINITE);
-            for (int i = 0; i < threadCount; i++) {
-                CloseHandle(handles[i]);
-            }
+            for (int i = 0; i < threadCount; i++) CloseHandle(handles[i]);
         }
         free(handles);
         if (portProgHandle) {
@@ -910,7 +931,6 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
         if (portList) free(portList);
     }
 
-    // Output detailed results.
     append(output, "\n");
     for (int i = 0; i < g_ipCount; i++) {
         IPResult* ipRes = &g_ipResults[i];
@@ -924,13 +944,9 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
         }
     }
 
-    // Print summary.
-    if (g_supportsANSI)
-        append(output, "\033[33m");
-
+    if (g_supportsANSI) append(output, "\033[33m");
     append(output, "\nSummary:\n");
-    if (g_supportsANSI)
-        append(output, "\033[0m");
+    if (g_supportsANSI) append(output, "\033[0m");
 
     for (int i = 0; i < g_ipCount; i++) {
         IPResult* ipRes = &g_ipResults[i];
@@ -939,22 +955,18 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
                 if (ipRes->netbiosName[0] != '\0') {
                     append(output, "%s (%s) responded to ping\n", ipRes->ip, ipRes->netbiosName);
                 }
-                else
-                {
+                else {
                     append(output, "%s responded to ping\n", ipRes->ip);
                 }
             }
             else {
-                // Sort the ports array in ascending order.
                 qsort(ipRes->openPorts, ipRes->openCount, sizeof(int), cmp_int);
-
                 char portsStr[512] = { 0 };
                 size_t offset = 0;
                 for (int j = 0; j < ipRes->openCount; j++) {
                     int n = snprintf(portsStr + offset, sizeof(portsStr) - offset, "%d%s",
                         ipRes->openPorts[j], (j < ipRes->openCount - 1 ? "," : ""));
-                    if (n < 0 || (size_t)n >= sizeof(portsStr) - offset)
-                        break;
+                    if (n < 0 || (size_t)n >= sizeof(portsStr) - offset) break;
                     offset += n;
                 }
                 if (ipRes->netbiosName[0] != '\0') {
@@ -967,37 +979,32 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
         }
     }
 
-    // Record end time and print scan duration.
     DWORD endTime = GetTickCount();
-    DWORD elapsedTime = endTime - startTime;
-    double seconds = elapsedTime / 1000.0;
+    double seconds = (endTime - startTime) / 1000.0;
     append(output, "\nScan Duration: %.2f s\n", seconds);
 
-    // Free allocated IP results.
     cleanup_ip_results();
     return 0;
 }
 
-//-----------------------------------------------------
-// Main Execute Function (formerly exported from DLL)
-//-----------------------------------------------------
+// ----------------------
+// Execute
+// ----------------------
 int Execute(char* argsBuffer, uint32_t bufferSize, goCallback callback) {
     output = NewOutput(128, callback);
     if (!output) {
-        static char allocFailMsg[] = "[!] Failed to allocate output buffer\n";
-        if (callback) {
-            callback(allocFailMsg, (int)strlen(allocFailMsg));
-        }
+        static char errorMsg[] = "[!] Failed to allocate output buffer\n";
+        if (callback) callback(errorMsg, (int)strlen(errorMsg));
         return 1;
     }
 
-    // Reset global state for each run
     g_threadLimit = G_THREAD_LIMIT;
     g_ctimeout = G_TIMEOUT_DEFAULT;
     g_rechecks = G_RECHECKS;
     g_pingEnabled = 1;
     g_isPingOnly = 0;
     g_netbiosEnabled = 0;
+    g_udpEnabled = 0;
     int isNoPorts = 0;
 
     if (bufferSize < 1) {
@@ -1016,16 +1023,17 @@ int Execute(char* argsBuffer, uint32_t bufferSize, goCallback callback) {
 
     if (strstr(buf, "-h") != NULL) {
         append(output, "Usage: <target> [portRange] [options]\n");
-        append(output, "  target:    Hostname (e.g., scanme.nmap.org), single IP, or range (192.168.1.1-100)\n");
-        append(output, "  portRange: Single port, range (80-90), comma-separated list (22,80,443), or 'all'\n");
+        append(output, "  target:    Hostname, IP, or range (e.g., 192.168.1.1-100)\n");
+        append(output, "  portRange: Single, range (80-90), list (80,443), or 'all'\n");
         append(output, "Options:\n");
-        append(output, "  -T <num>:  Set thread limit (default: 20, max: 50)\n");
-        append(output, "  -t <ms>:   Set port scan timeout in msec (default: 100)\n");
+        append(output, "  -T <num>:  Thread limit (default: 20, max: 50)\n");
+        append(output, "  -t <ms>:   Scan timeout in msec (default: 300)\n");
         append(output, "  -r <num>:  Set extra rechecks for unanswered ports (default: 0, max: 10)\n");
-        append(output, "  -Pn:       Disable ping (skip host discovery)\n");
-        append(output, "  -i:        Perform ping scan only (skip port scan)\n");
-        append(output, "  -Nb:       Enable hostname resolution via reverse DNS lookup\n");
-        append(output, "  -h:        Display this help message\n");
+        append(output, "  -u:        Perform UDP scan instead of TCP\n");
+        append(output, "  -Pn:       Disable ping\n");
+        append(output, "  -i:        Ping scan only\n");
+        append(output, "  -Nb:       Enable hostname resolution\n");
+        append(output, "  -h:        Display this help\n");
         free(buf);
         return success(output);
     }
@@ -1037,7 +1045,6 @@ int Execute(char* argsBuffer, uint32_t bufferSize, goCallback callback) {
     char* token = strtok(buf, " ");
     while (token != NULL) {
         if (token[0] == '-') {
-            // It's a flag
             if (strncmp(token, "-T", 2) == 0) {
                 const char* valueStr = token + 2;
                 if (*valueStr == '\0') { valueStr = strtok(NULL, " "); }
@@ -1065,6 +1072,9 @@ int Execute(char* argsBuffer, uint32_t bufferSize, goCallback callback) {
             else if (strcmp(token, "-Nb") == 0) {
                 g_netbiosEnabled = 1;
             }
+            else if (strcmp(token, "-u") == 0 || strcmp(token, "-sU") == 0) {
+                g_udpEnabled = 1;
+            }
         }
         else {
             if (targetRange == NULL) {
@@ -1086,14 +1096,17 @@ int Execute(char* argsBuffer, uint32_t bufferSize, goCallback callback) {
 
     if (pingOnlyFlag) {
         g_isPingOnly = 1;
-        if (portRange) {
-            free(portRange);
-            portRange = NULL;
-        }
+        if (portRange) { free(portRange); portRange = NULL; }
     }
     else {
         if (portRange == NULL) {
-            portRange = _strdup("20,21,22,23,25,53,65,66,69,80,88,110,111,135,139,143,194,389,443,445,464,465,587,593,636,873,993,995,1194,1433,1494,1521,1540,1666,1801,1812,1813,2049,2179,2222,2383,2598,3000,3268,3269,3306,3333,3389,4444,4848,5000,5044,5060,5061,5432,5555,5601,5631,5666,5671,5672,5693,5900,5931,5938,5984,5985,5986,6160,6200,6379,6443,6600,6771,7001,7474,7687,7777,7990,8000,8006,8080,8081,8082,8086,8088,8090,8091,8200,8443,8444,8500,8529,8530,8531,8600,8888,8912,9000,9042,9080,9090,9092,9160,9200,9229,9300,9389,9443,9515,9999,10000,10001,10011,10050,10051,11211,15672,17990,27015,27017,30033,47001");
+            // Different default ports for UDP vs TCP
+            if (g_udpEnabled) {
+                portRange = _strdup("53,67,68,69,88,111,123,137,138,161,162,389,443,464,500,514,520,1194,1701,1812,1813,1900,2049,2055,2056,2123,2152,2222,3074,3222,3478,3479,3480,3784,3785,4500,4739,4789,5004,5005,5060,5061,5349,5353,5355,6081,8125,8472,9600,9995,9996,19302,20000,25826,27015,47808,51820");
+            }
+            else {
+                portRange = _strdup("20,21,22,23,25,53,65,66,69,80,88,110,111,135,139,143,194,389,443,445,464,465,587,593,636,873,993,995,1194,1433,1494,1521,1540,1666,1801,1812,1813,2049,2179,2222,2383,2598,3000,3268,3269,3306,3333,3389,4444,4848,5000,5044,5060,5061,5432,5555,5601,5631,5666,5671,5672,5693,5900,5931,5938,5984,5985,5986,6160,6200,6379,6443,6600,6771,7001,7474,7687,7777,7990,8000,8006,8080,8081,8082,8086,8088,8090,8091,8200,8443,8444,8500,8529,8530,8531,8600,8888,8912,9000,9042,9080,9090,9092,9160,9200,9229,9300,9389,9443,9515,9999,10000,10001,10011,10050,10051,11211,15672,17990,27015,27017,30033,47001");
+            }
             isNoPorts = 1;
         }
         g_isPingOnly = 0;
@@ -1104,13 +1117,14 @@ int Execute(char* argsBuffer, uint32_t bufferSize, goCallback callback) {
         g_headerPrintedStdout = true;
     }
 
-    // Print settings to stdout once before progress
     if (g_supportsANSI) printf("\033[97m");
     printf("[.] Scanning Target: %s\n", targetRange);
+    printf("[.] Protocol: %s\n", g_udpEnabled ? "UDP" : "TCP");
     if (!g_isPingOnly) {
         if (!isNoPorts) printf("[.] PORT(s): %s\n", portRange);
-        else printf("[.] PORT(s): TOP 123\n");
-    } else {
+        else printf("[.] PORT(s): %s\n", g_udpEnabled ? "Top 57 UDP" : "Top 123 TCP");
+    }
+    else {
         printf("[.] Ping-only scan mode\n");
     }
     printf("[.] Threads: %d   Rechecks: %d   Timeout: %d\n", g_threadLimit, g_rechecks, g_ctimeout);
@@ -1120,28 +1134,19 @@ int Execute(char* argsBuffer, uint32_t bufferSize, goCallback callback) {
 
     int scanResult = run_port_scan(targetRange, portRange);
 
-    // Free allocated memory
     free(targetRange);
-    if (portRange) {
-        free(portRange);
-    }
+    if (portRange) free(portRange);
 
     int exitCode = (scanResult == 0) ? success(output) : failure(output);
     output = NULL;
     return exitCode;
 }
 
-//-----------------------------------------------------
-// Simple callback that prints output to the console.
-//-----------------------------------------------------
 int console_callback(char* text, int len) {
     printf("%s", text);
     return 0;
 }
 
-//-----------------------------------------------------
-// Main entry point for the executable.
-//-----------------------------------------------------
 int main(int argc, char* argv[]) {
     initConsoleColorSupport();
     if (argc < 2) {
@@ -1152,16 +1157,13 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Combine all command-line arguments into a single buffer.
-    char argsBuffer[1024] = { 0 }; // Increased buffer size
+    char argsBuffer[1024] = { 0 };
     int pos = 0;
     for (int i = 1; i < argc; i++) {
         int n = snprintf(argsBuffer + pos, sizeof(argsBuffer) - pos, "%s ", argv[i]);
-        if (n < 0 || n >= (int)(sizeof(argsBuffer) - pos))
-            break;
+        if (n < 0 || n >= (int)(sizeof(argsBuffer) - pos)) break;
         pos += n;
     }
 
-    // Call our Execute function using the console callback.
     return Execute(argsBuffer, (uint32_t)strlen(argsBuffer), console_callback);
 }
