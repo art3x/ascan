@@ -33,7 +33,7 @@ Output* output = NULL;
 // Global configuration variables
 int g_threadLimit = G_THREAD_LIMIT;
 static int g_ctimeout = G_TIMEOUT_DEFAULT;
-int g_rechecks = G_RECHECKS; // Rechecks global
+int g_rechecks = G_RECHECKS;
 
 // Console ANSI capability
 bool g_supportsANSI = false;
@@ -74,7 +74,7 @@ static void print_header_stdout() {
     printf("|     |  _|  _|__   |  _| .'|   |\n");
     printf("|__|__|_| |_| |_____|___|__,|_|_|\n");
     if (g_supportsANSI) printf("\033[32m");
-    printf("ArtScan by @art3x (Windows) ver 1.4\n");
+    printf("ArtScan by @art3x (Windows) ver 1.6 (SIP Fix)\n");
     if (g_supportsANSI) printf("\033[34m");
     printf("https://github.com/art3x\n");
     if (g_supportsANSI) printf("\033[0m");
@@ -149,9 +149,9 @@ static const char* strcasestr_local(const char* haystack, const char* needle) {
 }
 
 // ----------------------
-// UDP Payload Helper
+// UDP Payload Helper (UPDATED)
 // ----------------------
-int get_udp_payload(int port, char* buffer, int bufSize) {
+int get_udp_payload(const char* target_ip, int port, char* buffer, int bufSize) {
     memset(buffer, 0, bufSize);
 
     // DNS (53)
@@ -173,8 +173,8 @@ int get_udp_payload(int port, char* buffer, int bufSize) {
             return 48;
         }
     }
-    // SNMP (161)
-    else if (port == 161) {
+    // SNMP (161, 162) - Updated to include trap port
+    else if (port == 161 || port == 162) {
         char snmpPkt[] = "\x30\x26\x02\x01\x01\x04\x06\x70\x75\x62\x6c\x69\x63\xa1\x19\x02\x04\x1a\x2b\x3c\x4d\x02\x01\x00\x02\x01\x00\x30\x0b\x30\x09\x06\x05\x2b\x06\x01\x02\x01\x05\x00";
         if (bufSize >= sizeof(snmpPkt) - 1) {
             memcpy(buffer, snmpPkt, sizeof(snmpPkt) - 1);
@@ -196,6 +196,22 @@ int get_udp_payload(int port, char* buffer, int bufSize) {
             strcpy(buffer, ssdp);
             return (int)strlen(ssdp);
         }
+    }
+    // SIP (5060, 5061) - Updated to RFC 3261 compliant
+    else if (port == 5060 || port == 5061) {
+        int len = snprintf(buffer, bufSize,
+            "OPTIONS sip:100@%s SIP/2.0\r\n"
+            "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK-2523423\r\n"
+            "Max-Forwards: 70\r\n"
+            "From: \"Scanner\" <sip:scanner@127.0.0.1>;tag=324324\r\n"
+            "To: <sip:100@%s>\r\n"
+            "Call-ID: 123456789@127.0.0.1\r\n"
+            "CSeq: 1 OPTIONS\r\n"
+            "Content-Length: 0\r\n\r\n",
+            target_ip, target_ip);
+
+        if (len < 0 || len >= bufSize) return 0;
+        return len;
     }
 
     return 0;
@@ -581,7 +597,8 @@ int scan_port(const char* ip, int port, int ipIndex) {
             }
 
             char udpPayload[512];
-            int pLoadSize = get_udp_payload(port, udpPayload, sizeof(udpPayload));
+            // Fix: Pass ip to get_udp_payload for SIP header construction
+            int pLoadSize = get_udp_payload(ip, port, udpPayload, sizeof(udpPayload));
 
             if (send(sock, udpPayload, pLoadSize, 0) == SOCKET_ERROR) {
                 closesocket(sock);
@@ -1026,7 +1043,7 @@ int Execute(char* argsBuffer, uint32_t bufferSize, goCallback callback) {
         append(output, "  target:    Hostname, IP, or range (e.g., 192.168.1.1-100)\n");
         append(output, "  portRange: Single, range (80-90), list (80,443), or 'all'\n");
         append(output, "Options:\n");
-        append(output, "  -T <num>:  Thread limit (default: 20, max: 50)\n");
+        append(output, "  -T <num>:  Thread limit (default: 20)\n");
         append(output, "  -t <ms>:   Scan timeout in msec (default: 300)\n");
         append(output, "  -r <num>:  Set extra rechecks for unanswered ports (default: 0, max: 10)\n");
         append(output, "  -u:        Perform UDP scan instead of TCP\n");
@@ -1122,7 +1139,7 @@ int Execute(char* argsBuffer, uint32_t bufferSize, goCallback callback) {
     printf("[.] Protocol: %s\n", g_udpEnabled ? "UDP" : "TCP");
     if (!g_isPingOnly) {
         if (!isNoPorts) printf("[.] PORT(s): %s\n", portRange);
-        else printf("[.] PORT(s): %s\n", g_udpEnabled ? "Top 57 UDP" : "Top 123 TCP");
+        else printf("[.] PORT(s): %s\n", g_udpEnabled ? "Common UDP" : "Top 123 TCP");
     }
     else {
         printf("[.] Ping-only scan mode\n");

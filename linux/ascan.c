@@ -77,7 +77,7 @@ static void print_header(void) {
     printf("|  _  |___| |_|   __|___ ___ ___ \n");
     printf("|     |  _|  _|__   |  _| .'|   |\n");
     printf("|__|__|_| |_| |_____|___|__,|_|_|\n");
-    printf("\033[32mArtScan by @art3x (Linux) ver 1.4\033[0m\n");
+    printf("\033[32mArtScan by @art3x (Linux) ver 1.4.1\033[0m\n");
     printf("\033[34mhttps://github.com/art3x\033[0m\n\n");
 }
 
@@ -99,7 +99,7 @@ static int is_http_like_port(int port) {
 }
 
 // Generate specific UDP payloads to trigger responses
-static int get_udp_payload(int port, unsigned char *buf, int maxlen) {
+static int get_udp_payload(const char *target_ip, int port, unsigned char *buf, int maxlen) {
     memset(buf, 0, maxlen);
     if (port == 53) { // DNS Query (A record for root)
         unsigned char dns[] = {
@@ -127,7 +127,7 @@ static int get_udp_payload(int port, unsigned char *buf, int maxlen) {
         memcpy(buf, nb, sizeof(nb));
         return sizeof(nb);
     }
-    else if (port == 161) { // SNMPv1 public get-next (sysDescr)
+    else if (port == 161 || port == 162) { // SNMPv1 public get-next (sysDescr)
         unsigned char snmp[] = {
             0x30, 0x26, 0x02, 0x01, 0x00, 0x04, 0x06, 0x70, 0x75, 0x62, 0x6C, 0x69,
             0x63, 0xA1, 0x19, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00,
@@ -145,13 +145,22 @@ static int get_udp_payload(int port, unsigned char *buf, int maxlen) {
         memcpy(buf, ssdp, len);
         return len;
     }
-    else if (port == 5060) { // SIP Options
-        const char *sip = "OPTIONS sip:nm SIP/2.0\r\nContent-Length: 0\r\n\r\n";
-        int len = strlen(sip);
-        if (maxlen < len) return 0;
-        memcpy(buf, sip, len);
-        return len;
-    }
+    else if (port == 5060 || port == 5061) { // SIP Options (Updated to RFC 3261 compliant)
+            // Many SIP servers ignore packets without Via, From, To, Call-ID, CSeq.
+            // We use 127.0.0.1 for local address to avoid needing local IP resolution.
+            int len = snprintf((char*)buf, maxlen,
+                "OPTIONS sip:100@%s SIP/2.0\r\n"
+                "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK-2523423\r\n"
+                "Max-Forwards: 70\r\n"
+                "From: \"Scanner\" <sip:scanner@127.0.0.1>;tag=324324\r\n"
+                "To: <sip:100@%s>\r\n"
+                "Call-ID: 123456789@127.0.0.1\r\n"
+                "CSeq: 1 OPTIONS\r\n"
+                "Content-Length: 0\r\n\r\n",
+                target_ip, target_ip);
+            if (len < 0 || len >= maxlen) return 0;
+            return len;
+        }
     // Generic payload for others
     if (maxlen > 0) {
         buf[0] = 0x00;
@@ -511,7 +520,7 @@ static void *worker_port(void *_) {
                 // Connect allows using send/recv and filtering ICMP errors implicitly on some systems
                 if (connect(sock, (void*)&sa, sizeof(sa)) == 0) {
                     unsigned char payload[512];
-                    int plen = get_udp_payload(port, payload, sizeof(payload));
+                    int plen = get_udp_payload(g_ipResults[idx].ip, port, payload, sizeof(payload));
                     
                     if (send(sock, payload, plen, 0) == plen) {
                         fd_set rf; FD_ZERO(&rf); FD_SET(sock, &rf);
